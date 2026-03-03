@@ -42,7 +42,5 @@ build/
 *.sqlite3
 *.db
 
-# --- Local datasets and generated artifacts ---
-data/
-!data/.gitkeep
-!data/README.md
+# --- Local datasets ---
+# Intentionally tracked: keep data/ versioned for this project.
