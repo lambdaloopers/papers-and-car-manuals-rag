@@ -1,0 +1,13 @@
+pydantic
+pydantic-settings
+python-dotenv
+langchain
+langchain-openai
+langchain-text-splitters
+openai
+docling
+psycopg[binary]
+pgvector
+tenacity
+orjson
+langsmith
