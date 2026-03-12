@@ -38,14 +38,20 @@ OUTPUTS:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run groundedness evaluation in LangSmith.")
-    parser.add_argument("--dataset-name", default="groundedness-v1", help="LangSmith dataset name.")
+    parser = argparse.ArgumentParser(
+        description="Run groundedness evaluation in LangSmith."
+    )
+    parser.add_argument(
+        "--dataset-name", default="groundedness-v1", help="LangSmith dataset name."
+    )
     parser.add_argument(
         "--experiment-prefix",
         default="groundedness-v1",
         help="Prefix used for the LangSmith experiment run.",
     )
-    parser.add_argument("--judge-model", default="gpt-4o-mini", help="OpenAI model used as LLM judge.")
+    parser.add_argument(
+        "--judge-model", default="gpt-4o-mini", help="OpenAI model used as LLM judge."
+    )
     parser.add_argument(
         "--max-concurrency",
         type=int,
@@ -55,8 +61,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _serialize_evidence(namespace: str, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    chunk_ids = [str(c.get("chunk_id", "")).strip() for c in citations if c.get("chunk_id")]
+def _serialize_evidence(
+    namespace: str, citations: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    chunk_ids = [
+        str(c.get("chunk_id", "")).strip() for c in citations if c.get("chunk_id")
+    ]
     if not chunk_ids:
         return []
 
@@ -135,7 +145,9 @@ def build_groundedness_evaluator(judge_model: str):
             "value": label,
             "comment": reason,
             "metadata": {
-                "unsupported_claims": unsupported_claims if isinstance(unsupported_claims, list) else [],
+                "unsupported_claims": (
+                    unsupported_claims if isinstance(unsupported_claims, list) else []
+                ),
             },
         }
 

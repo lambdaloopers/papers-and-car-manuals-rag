@@ -1,10 +1,10 @@
-# Arquitectura
+# Architecture
 
-RAG multimodal local para PDFs científicos. Demuestra recuperación híbrida (BM25 + vectores), ingestión multimodal con Docling y generación fundamentada con citas — todo desde la terminal, sobre una única instancia de Postgres.
+Compact architecture reference with diagram-first documentation and short context for each flow.
 
----
+## System Overview
 
-## Visión General del Sistema
+End-to-end view of ingestion, storage, retrieval, and answer generation from CLI entrypoints.
 
 ```mermaid
 %%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
@@ -23,7 +23,7 @@ graph TD
         CLI_DC["scripts/demo_cars.py<br/>Cars chat"]
     end
 
-    subgraph SG2["Pipeline de Ingestión"]
+    subgraph SG2["Pipeline de Ingestion"]
         DOCLING["Docling Parser<br/>parse_pdf + elementos tipados"]
         CHUNK_P["chunk_elements (papers)<br/>1200 / 150 por elemento"]
         CHUNK_C["chunk_elements_cars (cars)<br/>2400 / 300 por pagina/grupo"]
@@ -31,7 +31,7 @@ graph TD
         EMBED["Embeddings<br/>text-embedding-3-small"]
     end
 
-    subgraph SG3["Recuperación"]
+    subgraph SG3["Recuperacion"]
         EXPAND["_expand_query<br/>query original + 2 variantes"]
         LEX["Busqueda Lexica<br/>BM25 via pg_search / fallback tsvector"]
         VEC["Busqueda Vectorial<br/>pgvector coseno / indice HNSW"]
@@ -43,7 +43,7 @@ graph TD
         CHK_T["chunks<br/>embedding(1536)<br/>content_tsv + bm25"]
     end
 
-    subgraph SG5["Generación"]
+    subgraph SG5["Generacion"]
         CHAIN["ReAct Agent (answer_query)<br/>_rewrite_query + loop con tools"]
         TOOL["retrieve tool<br/>fallback sin filter si no hay resultados"]
         LLM["ChatOpenAI gpt-4o-mini<br/>respuesta fundamentada + citas"]
@@ -88,20 +88,11 @@ graph TD
     style SG5 fill:#FBCFE8,stroke:#DB2777,color:#000000,font-weight:bold
 ```
 
----
+## Ingestion
 
-## Ingestión
+### Papers Ingestion Flow
 
-La ingestión tiene dos rutas explícitas e independientes: **papers** y **cars**. La elección ocurre en el entry point (`scripts/ingest.py`, `scripts/ingest_cars.py`, `scripts/demo_cars.py`) y cada pipeline llama su chunker específico sin condicionales por tipo de documento dentro de `pipeline.py`.
-
-### Ingestión de papers
-
-Ruta principal para papers científicos: `ingest.py` llama `ingest_pdf_papers()`, que usa el chunking histórico por elemento (`chunk_elements`) con `chunk_size=1200` y `chunk_overlap=150`.
-
-**Modelos usados (papers):**
-
-- `gpt-4o-mini`: genera descripciones de figuras y tablas en `vision_enrichment.py`.
-- `text-embedding-3-small`: crea embeddings para persistir y recuperar chunks semánticamente.
+Scientific papers are parsed into typed elements, chunked by element, enriched with vision descriptions, and stored with embeddings.
 
 ```mermaid
 %%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
@@ -124,16 +115,9 @@ flowchart TD
     REPO --> DB[("PostgreSQL<br/>documents + chunks")]:::storage
 ```
 
-**Estrategia papers (por elemento):**
+### Cars Ingestion Flow
 
-- `table` se conserva como chunk único por elemento.
-- `text` / `code` se divide con `RecursiveCharacterTextSplitter` respetando cortes naturales.
-- IDs trazables: `{doc_id}:{element_idx}:{part_idx}`.
-- Mantiene alta precisión para contenido técnico denso y secciones cortas.
-
-### Ingestión de cars
-
-Ruta para manuales de coche: `ingest_cars.py` y `demo_cars.py` llaman `ingest_pdf_cars()`, que usa `chunk_elements_cars()` para generar chunks más largos, orientados a instrucciones multi-bloque.
+Car manuals use a dedicated chunking strategy (page/group oriented) to better preserve procedural instructions.
 
 ```mermaid
 %%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
@@ -150,9 +134,9 @@ flowchart TD
     PIPE --> PARSER["docling_parser.py<br/>parse_pdf<br/>page_images = True"]:::ingest
     PARSER --> CARS_CHUNK["chunking_cars.py<br/>chunk_elements_cars"]:::ingest
 
-    CARS_CHUNK --> GROUP["Agrupa texto por página<br/>concatena elementos consecutivos"]:::ingest
-    GROUP --> SPLIT["Split recursivo (2400/300)<br/>merge de chunks pequeños"]:::ingest
-    PARSER --> TABLES["Tablas como chunk único"]:::ingest
+    CARS_CHUNK --> GROUP["Agrupa texto por pagina<br/>concatena elementos consecutivos"]:::ingest
+    GROUP --> SPLIT["Split recursivo (2400/300)<br/>merge de chunks pequenos"]:::ingest
+    PARSER --> TABLES["Tablas como chunk unico"]:::ingest
 
     SPLIT --> REPO["ChunkRepository.upsert_chunks<br/>embeddings text-embedding-3-small"]:::storage
     TABLES --> REPO
@@ -161,21 +145,9 @@ flowchart TD
     REPO --> DB[("PostgreSQL<br/>documents + chunks")]:::storage
 ```
 
-**Estrategia cars (por página/grupo):**
+## Retrieval
 
-- Agrupa elementos consecutivos de texto por `page` antes de hacer split.
-- Configuración dedicada: `chunk_size=2400`, `chunk_overlap=300`.
-- Aplica merge de fragmentos cortos (umbral ~200 chars) para evitar chunks demasiado pequeños.
-- `table` sigue como chunk individual para preservar estructura tabular.
-- IDs trazables: `{doc_id}:p{page}:g{group}:{part}` para texto agrupado y `{doc_id}:table:{element_idx}:0` para tablas.
-
-Estas dos rutas comparten parseo, enriquecimiento visual, embedding y persistencia, pero desacoplan completamente la estrategia de chunking para optimizar recuperación según el tipo de documento.
-
----
-
-## Recuperación
-
-`src/retrieval/` implementa búsqueda híbrida en paralelo: BM25 sobre el índice `pg_search` para coincidencia exacta de términos, y coseno sobre `pgvector` para similitud semántica. `fusion.py` combina ambas listas con Reciprocal Rank Fusion sin necesidad de normalizar puntuaciones.
+Hybrid retrieval runs lexical and vector search over expanded queries, then fuses all rankings with RRF.
 
 ```mermaid
 %%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
@@ -205,37 +177,9 @@ flowchart TD
     RRF --> OUT["📋 lista de RetrievedChunk<br/>top-8 chunks fusionados"]:::io
 ```
 
-### ¿Qué hace cada componente?
+## RAG Agent
 
-**Expansión de consulta — multi-query fan-out**
-
-Antes de lanzar ninguna búsqueda, `_expand_query` invoca el LLM (temperatura 0.3) para generar 2 formulaciones alternativas de la consulta original con vocabulario distinto — sinónimos, términos relacionados y variaciones que un documento podría contener. Por ejemplo, "CD ejected automatically" puede expandirse a "disc player automatic ejection" y "compact disc player reject". La recuperación se ejecuta en paralelo para la consulta original y las dos variantes; todos los candidatos se acumulan antes de pasar por RRF. De este modo, un chunk que no comparte ningún término con la consulta original pero sí con una variante sigue siendo recuperable, aumentando el recall sin sacrificar precisión gracias a la fusión posterior.
-
-**Normalización del filtro de documento**
-
-El parámetro `document_filter` se normaliza antes de construir el patrón `ILIKE`: los espacios se sustituyen por `%` para que "Peugeot 5008" coincida con el `doc_id` `peugeot_5008` (que usa guiones bajos por ser el stem del nombre de fichero). Sin esta normalización, el filtro nunca produciría resultados en documentos cuyo nombre contiene espacios.
-
-**Fallback de filtro sin resultados**
-
-Si `document_filter` está activo pero devuelve cero chunks — por un nombre mal escrito o un documento no ingerido —, el `retrieve tool` en `chain.py` reintenta automáticamente la búsqueda sobre el corpus completo y añade una nota `NOTE:` al mensaje de herramienta para que el LLM sepa que los resultados provienen de un ámbito más amplio. Así se evita que el agente concluya erróneamente que no existe información sobre el tema.
-
-**Búsqueda léxica — BM25**
-
-BM25 es un algoritmo clásico de recuperación de información que busca por coincidencia exacta de palabras. Dado un texto de consulta, puntúa cada chunk según cuántas veces aparecen los términos de la consulta y ajusta ese recuento por la longitud del chunk (para no favorecer artificialmente los fragmentos más largos). Es ideal para términos técnicos concretos: si preguntas por "transformer attention mechanism", BM25 encontrará los chunks que contienen exactamente esas palabras. La implementación usa `pg_search` de ParadeDB con el operador `@@@`, con fallback automático a `tsvector` nativo de PostgreSQL si ParadeDB no está disponible.
-
-**Búsqueda vectorial — similitud coseno**
-
-La búsqueda vectorial funciona con significado, no con palabras exactas. Antes de almacenar cada chunk, su texto se convierte en un vector de 1536 números (un embedding) con `text-embedding-3-small` de OpenAI — una representación numérica del significado del texto. Cuando llega una consulta, se genera su embedding del mismo modo. La similitud coseno mide el ángulo entre los dos vectores: ángulo pequeño → vectores apuntando en la misma dirección → mismo significado. Así, una pregunta sobre "redes neuronales profundas" puede recuperar chunks que hablan de "deep learning" sin compartir ninguna palabra. El índice HNSW de `pgvector` hace que esta comparación sea muy rápida incluso con millones de chunks.
-
-**RRF Fusion — Reciprocal Rank Fusion**
-
-BM25 y la búsqueda vectorial devuelven puntuaciones en escalas completamente distintas (BM25 usa recuentos ponderados de términos, coseno devuelve valores entre 0 y 1), por lo que sumarlas directamente no tiene sentido. RRF evita ese problema ignorando las puntuaciones absolutas y usando solo la posición (rank) de cada chunk en cada lista. La fórmula `score = Σ 1 / (k + rank)` hace que un chunk que aparece en el puesto 1 de ambas listas acumule mucho más que uno que solo aparece en una. Con `k = 60`, los primeros puestos tienen peso significativo sin penalizar demasiado a los que aparecen más abajo. Con multi-query fan-out, todos los candidatos de las tres consultas compiten en una única pasada de fusión, lo que recompensa con mayor puntuación los chunks que aparecen bien posicionados en varias variantes. El resultado final son los 8 chunks con mejor puntuación combinada.
-
----
-
-## RAG
-
-`src/rag/` implementa un agente ReAct: `chain.py` reescribe la consulta cuando hay historial de conversación, expone el recuperador híbrido como herramienta LangChain (`@tool`) y ejecuta un bucle ReAct donde el LLM decide cuántas veces invocar `retrieve` antes de sintetizar la respuesta. Las citas se construyen a partir de todos los chunks acumulados a lo largo del bucle.
+The ReAct loop decides when to call retrieval, accumulates evidence, and returns answer plus citations.
 
 ```mermaid
 %%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
@@ -254,7 +198,7 @@ flowchart TD
     TOOL["make_retrieve_tool<br/>crea @tool retrieve(query)<br/>acumula en accumulated_chunks"]:::agent
     TOOL --> LOOP
 
-    LOOP["_run_react_loop<br/>llm.bind_tools([retrieve])<br/>máx. _MAX_ITER = 5"]:::agent
+    LOOP["_run_react_loop<br/>llm.bind_tools([retrieve])<br/>max. _MAX_ITER = 5"]:::agent
     LOOP -->|tool_calls| EXEC
     EXEC["retrieve tool<br/>HybridRetriever.retrieve<br/>→ ToolMessage al hilo"]:::retrieval
     EXEC --> LOOP
@@ -264,32 +208,9 @@ flowchart TD
     DEDUP --> OUT["📝 AnswerResult<br/>answer + citations[]"]:::io
 ```
 
-### Cómo se usa LangChain en este proyecto
+## Query And Retrieval Loop
 
-LangChain se usa aquí como **capa de integración de agente**, aportando cuatro elementos clave:
-
-- **`ChatOpenAI`** (`langchain_openai`): wrapper tipado sobre la API de chat de OpenAI que gestiona autenticación, serialización de mensajes y configuración del modelo (`gpt-4o-mini`, `temperature=0`).
-- **`@tool`** (`langchain_core.tools`): decora la función `retrieve` para que el LLM pueda invocarla como herramienta. LangChain serializa automáticamente el esquema de entrada y parsea las llamadas del modelo.
-- **`llm.bind_tools([retrieve])`**: registra la herramienta en el LLM habilitando el modo tool-use de la API de OpenAI.
-- **Mensajes tipados** (`SystemMessage`, `HumanMessage`, `AIMessage`, `ToolMessage`): estructuran el hilo de conversación del agente — el `SystemMessage` lleva las instrucciones de comportamiento (rol, prohibición de alucinaciones y obligación de usar `retrieve`), los `HumanMessage`/`AIMessage` reconstruyen el historial y los `ToolMessage` devuelven los resultados de cada llamada a la herramienta.
-
-### ¿Hay agentes en este pipeline?
-
-Sí. El pipeline usa un **agente ReAct** (Reason + Act) implementado en `_run_react_loop`. A diferencia de un flujo de recuperación única y lineal, el LLM controla activamente cuántas veces recupera información:
-
-1. `answer_query` reescribe la consulta con `_rewrite_query` si hay historial de conversación — resuelve pronombres y referencias para que la búsqueda sea autocontenida.
-2. `make_retrieve_tool` crea una herramienta `retrieve` con `@tool` que llama a `HybridRetriever` y acumula los chunks devueltos en `accumulated_chunks`.
-3. `_run_react_loop` invoca `llm.bind_tools([retrieve])` en un bucle (máximo `_MAX_ITER = 5`):
-   - Si la respuesta contiene `tool_calls`, ejecuta `retrieve` y añade un `ToolMessage` al hilo de mensajes.
-   - Si no hay `tool_calls`, el LLM ha sintetizado la respuesta final y el bucle termina.
-4. Los chunks acumulados a lo largo de todas las llamadas a `retrieve` se deduplicaran por `chunk_id`.
-5. `answer_query` construye los objetos `Citation` y devuelve el `AnswerResult` final.
-
-El LLM elige activamente cuándo tiene suficiente contexto — puede llamar a `retrieve` varias veces con consultas distintas si la primera recuperación resulta insuficiente.
-
----
-
-## Flujo de Consulta y Recuperación
+Detailed control flow for query rewriting, filtered retrieval, fallback behavior, and iterative tool calls.
 
 ```mermaid
 %%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
@@ -301,19 +222,19 @@ flowchart TD
     classDef fallback  fill:#FEE2E2,stroke:#EF4444,color:#7F1D1D,font-weight:bold
 
     Q["Cliente: pregunta + historial"]:::client --> ANSWER
-    ANSWER["answer_query"]:::chain --> OPT{¿Hay historial?}
-    OPT -->|Sí| REWRITE["_rewrite_query + LLM → search_query"]:::chain
+    ANSWER["answer_query"]:::chain --> OPT{Hay historial?}
+    OPT -->|Si| REWRITE["_rewrite_query + LLM → search_query"]:::chain
     OPT -->|No| LOOP
     REWRITE --> LOOP["_run_react_loop"]
     LOOP --> BIND["LLM con bind_tools(retrieve)"]
     BIND --> TOOL["retrieve tool<br/>normaliza document_filter"]:::retrieval
     TOOL --> HYBRID["HybridRetriever<br/>multi-query fan-out + RRF top-8"]:::retrieval
-    HYBRID --> ZERO{¿0 chunks<br/>con filtro?}
+    HYBRID --> ZERO{0 chunks<br/>con filtro?}
     ZERO -->|No| MSG["ToolMessage con chunks"]:::retrieval
-    ZERO -->|Sí, fallback| RETRY["reintentar sin document_filter<br/>+ NOTE al LLM"]:::fallback
+    ZERO -->|Si, fallback| RETRY["reintentar sin document_filter<br/>+ NOTE al LLM"]:::fallback
     RETRY --> MSG
-    MSG --> CHECK{¿Más tool_calls?}
-    CHECK -->|Sí, max 5 iter| BIND
+    MSG --> CHECK{Mas tool_calls?}
+    CHECK -->|Si, max 5 iter| BIND
     CHECK -->|No| FIN["AIMessage sin tool_calls"]
     FIN --> OUT["AnswerResult con citations"]
     OUT --> CLIENT["Cliente"]:::client
@@ -322,11 +243,9 @@ flowchart TD
     class REWRITE llm
 ```
 
-**Fórmula RRF:** `score(chunk) = Σ 1 / (k + rank_i)` donde `k = 60`. Pesos iguales para las ramas léxica y vectorial. Con multi-query fan-out, los candidatos de las 3 consultas (original + 2 variantes) compiten en una única pasada de fusión. Ventana final de 8 chunks. Los chunks se acumulan a través de todas las iteraciones del bucle ReAct y se deduplicaran por `chunk_id` antes de construir las citas.
+## Database Schema
 
----
-
-## Esquema de Base de Datos
+Core storage model: `documents` as parent entities and `chunks` as the retrieval unit.
 
 ```mermaid
 %%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}, 'themeVariables': {
@@ -361,49 +280,71 @@ erDiagram
     documents ||--o{ chunks : "tiene"
 ```
 
-**Índices sobre `chunks`:**
+## Evals
 
-| Índice | Tipo | Propósito |
-|---|---|---|
-| `idx_chunks_bm25` | BM25 (`pg_search`) | Búsqueda léxica mediante operador `@@@` |
-| `idx_chunks_content_tsv` | GIN | FTS de fallback cuando BM25 no está disponible |
-| `idx_chunks_embedding_cosine` | HNSW | Búsqueda vectorial aproximada (ANN) |
+### What we measure and how
 
----
+- **Groundedness (`scripts/evals/run_groundedness_eval.py`)**: measures whether the generated answer is supported by retrieved evidence only.
+- **How groundedness is scored**: the script runs `answer_query`, fetches cited chunks from storage, truncates evidence text, and asks an LLM judge for a strict JSON verdict:
+  - `SUPPORTED` -> `1.0`
+  - `PARTIALLY_SUPPORTED` -> `0.5`
+  - `UNSUPPORTED` -> `0.0`
+- **Retrieval coverage (`scripts/evals/run_retrieval_eval.py`)**: measures if retrieved citations contain gold chunks from the dataset labels.
+- **How retrieval is scored** (top-k citations, default `k=8`):
+  - `retrieval_recall_at_k`: `|predicted ∩ gold| / |gold|`
+  - `retrieval_hit_at_k`: `1.0` if at least one gold chunk is in top-k, else `0.0`
 
-## Modelos y Librerías
+### Groundedness Eval Flow
 
-| Rol | Modelo / Librería |
-|---|---|
-| Parseo de PDFs | Docling `DocumentConverter` |
-| División de texto | LangChain `RecursiveCharacterTextSplitter` |
-| Embeddings | OpenAI `text-embedding-3-small` (1536 dims) |
-| Descripción visual | OpenAI `gpt-4o-mini` (imagen a texto) |
-| Chat / generación | OpenAI `gpt-4o-mini` via LangChain `ChatOpenAI` |
-| Índice léxico | ParadeDB `pg_search` BM25, fallback `tsvector` |
-| Índice vectorial | `pgvector` HNSW coseno |
-| Fusión | Reciprocal Rank Fusion (implementación propia) |
-| Agente ReAct | LangChain `@tool` + `bind_tools` + bucle propio |
-| Reescritura de consulta | LangChain `ChatOpenAI` + `QUERY_REWRITE_PROMPT` |
-| Trazabilidad | LangSmith `@traceable` |
-| Orquestación | LangChain Core |
+Execution flow from dataset input to LLM-as-judge groundedness feedback in LangSmith.
 
----
+```mermaid
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
+flowchart TD
+    classDef io         fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
+    classDef target     fill:#D1FAE5,stroke:#10B981,color:#064E3B,font-weight:bold
+    classDef storage    fill:#E0E7FF,stroke:#6366F1,color:#312E81,font-weight:bold
+    classDef judge      fill:#F3E8FF,stroke:#A855F7,color:#3B0764,font-weight:bold
+    classDef metric     fill:#FEF3C7,stroke:#D97706,color:#78350F,font-weight:bold
 
-## Técnicas RAG de un Vistazo
+    DS["LangSmith dataset<br/>groundedness-v1"]:::io --> EVAL["client.evaluate(...)"]:::io
+    EVAL --> TARGET["target(inputs)"]:::target
+    TARGET --> AQ["RAG agent<br/>answer_query(question, namespace)"]:::target
+    AQ --> DB["DB lookup<br/>ChunkRepository.fetch_chunks_by_ids(citations)"]:::storage
+    DB --> OUT["outputs:<br/>answer + evidence"]:::io
+    EVAL --> JUDGE["groundedness_evaluator"]:::judge
+    OUT --> JUDGE
+    JUDGE --> LLM["LLM judge (gpt-4o-mini)<br/>SUPPORTED | PARTIALLY_SUPPORTED | UNSUPPORTED"]:::judge
+    LLM --> METRIC["groundedness score<br/>1.0 / 0.5 / 0.0"]:::metric
+```
 
-| Técnica | Descripción |
-|---|---|
-| **Parseo estructurado** | Docling preserva encabezados, figuras, tablas y bloques de código como elementos tipados — evita volcados de texto plano |
-| **Chunks multimodales** | Figuras y tablas se exportan como PNGs, se describen con un LLM visual y se almacenan como chunks recuperables |
-| **Chunking recursivo** | Chunks de 1200 caracteres con 150 de overlap mantienen la continuidad semántica entre divisiones |
-| **Recuperación híbrida** | BM25 para coincidencia exacta de palabras clave + coseno denso para similitud semántica, en paralelo |
-| **Multi-query fan-out** | Antes de recuperar, el LLM genera 2 variantes de la consulta con vocabulario alternativo; todos los candidatos compiten en una única pasada de RRF, aumentando el recall frente a brechas terminológicas |
-| **Normalización de filtro** | Los espacios en `document_filter` se sustituyen por `%` en el patrón `ILIKE` para que "Peugeot 5008" coincida con el `doc_id` `peugeot_5008` independientemente del separador |
-| **Fallback de filtro** | Si `document_filter` produce cero resultados, el `retrieve tool` reintenta sin filtro y notifica al LLM mediante un mensaje `NOTE:`, evitando respuestas vacías por filtros que no encuentran coincidencia |
-| **Reciprocal Rank Fusion** | Fusiona todas las listas ordenadas (de las 3 consultas × 2 motores) sin necesidad de normalizar puntuaciones |
-| **Agente ReAct** | El LLM controla cuántas veces llama al recuperador (máx. 5) antes de sintetizar — puede lanzar consultas distintas si la primera es insuficiente |
-| **Reescritura de consulta** | En conversaciones multi-turno, la pregunta se reformula para resolver pronombres y referencias antes de la recuperación |
-| **Conversación multi-turno** | El historial completo (hasta 10 turns) se inyecta en el hilo de mensajes del agente |
-| **Generación fundamentada** | El system prompt instruye al modelo a responder solo desde el contexto y a señalar incertidumbre |
-| **Citas estructuradas** | Cada respuesta devuelve objetos `Citation` (doc, chunk, página, source_ref) para trazabilidad |
+### Retrieval Eval Flow
+
+Execution flow for `recall@k` and `hit@k` from predicted citations against gold chunk labels.
+
+```mermaid
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
+flowchart TD
+    classDef io         fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
+    classDef target     fill:#D1FAE5,stroke:#10B981,color:#064E3B,font-weight:bold
+    classDef metric     fill:#FEF3C7,stroke:#D97706,color:#78350F,font-weight:bold
+    classDef labels     fill:#FCE7F3,stroke:#EC4899,color:#500724,font-weight:bold
+
+    DS["LangSmith dataset<br/>retrieval-v1"]:::io --> EVAL["client.evaluate(...)"]:::io
+    IN["inputs: question, namespace"]:::io --> TARGET["target(inputs)"]:::target
+    TARGET --> AQ["answer_query(question, namespace)"]:::target
+    AQ --> OUT["target outputs:<br/>citations[]"]:::target
+
+    REF["reference_outputs.gold_chunk_ids[]"]:::labels --> GOLD["_gold_chunk_ids(...)"]:::labels
+    OUT --> PRED["_predict_chunk_ids(outputs, k)<br/>top-k chunk_id from citations"]:::labels
+
+    PRED --> REC["retrieval_recall_at_k<br/>matched = |predicted ∩ gold|<br/>score = matched / |gold|"]:::metric
+    GOLD --> REC
+
+    PRED --> HIT["retrieval_hit_at_k<br/>score = 1.0 if intersection non-empty else 0.0"]:::metric
+    GOLD --> HIT
+
+    EVAL --> TARGET
+    EVAL --> REC
+    EVAL --> HIT
+```
