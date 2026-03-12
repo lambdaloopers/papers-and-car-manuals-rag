@@ -83,3 +83,33 @@ PYTHONPATH=. python scripts/ingest.py --input-dir ./data/car_manuals --namespace
 
 - Lexical retrieval tries ParadeDB BM25 first and falls back to Postgres FTS if needed.
 - Vision captions are stored as extra chunks (`figure_caption` / `table_caption`) so multimodal evidence participates in retrieval.
+
+## Evals (LangSmith SDK)
+
+This repo includes two evaluators with separate datasets:
+
+- groundedness evaluator (faithfulness to retrieved evidence)
+- retrieval evaluator (Recall/Hit at K against gold chunk IDs)
+
+Prerequisites:
+
+- `LANGSMITH_TRACING=true`
+- `LANGSMITH_API_KEY`
+- `OPENAI_API_KEY`
+
+Run:
+
+```bash
+PYTHONPATH=. python scripts/evals/create_groundedness_dataset.py --dataset-name groundedness-v1
+PYTHONPATH=. python scripts/evals/create_groundedness_dataset.py --dataset-name retrieval-v1 --examples-path ./data/evals/retrieval_examples.jsonl
+PYTHONPATH=. python scripts/evals/run_groundedness_eval.py --dataset-name groundedness-v1 --experiment-prefix groundedness-v1
+PYTHONPATH=. python scripts/evals/run_retrieval_eval.py --dataset-name retrieval-v1 --experiment-prefix retrieval-v1 --k 8
+```
+
+To replace an existing LangSmith dataset instead of appending:
+
+```bash
+PYTHONPATH=. python scripts/evals/create_groundedness_dataset.py --dataset-name groundedness-v1 --replace
+```
+
+More details: `docs/evals-groundedness.md`

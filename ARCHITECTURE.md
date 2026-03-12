@@ -7,7 +7,7 @@ RAG multimodal local para PDFs científicos. Demuestra recuperación híbrida (B
 ## Visión General del Sistema
 
 ```mermaid
-%%{init: {'theme': 'base'}}%%
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
 graph TD
     classDef cli        fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
     classDef ingest     fill:#D1FAE5,stroke:#10B981,color:#064E3B,font-weight:bold
@@ -16,56 +16,70 @@ graph TD
     classDef storage    fill:#E0E7FF,stroke:#6366F1,color:#312E81,font-weight:bold
     classDef generation fill:#FCE7F3,stroke:#EC4899,color:#500724,font-weight:bold
 
-    subgraph SG1[Terminal]
-        CLI_I["scripts/ingest.py"]
-        CLI_D["scripts/demo.py"]
+    subgraph SG1["Terminal"]
+        CLI_IP["scripts/ingest.py<br/>papers"]
+        CLI_IC["scripts/ingest_cars.py<br/>cars"]
+        CLI_DP["scripts/demo.py<br/>Papers chat"]
+        CLI_DC["scripts/demo_cars.py<br/>Cars chat"]
     end
 
     subgraph SG2["Pipeline de Ingestión"]
-        DOCLING["Docling Parser<br/>extracción de elementos estructurados"]
-        CHUNK["RecursiveCharacterTextSplitter<br/>1200 chars / 150 overlap"]
+        DOCLING["Docling Parser<br/>parse_pdf + elementos tipados"]
+        CHUNK_P["chunk_elements (papers)<br/>1200 / 150 por elemento"]
+        CHUNK_C["chunk_elements_cars (cars)<br/>2400 / 300 por pagina/grupo"]
         VISION["Enriquecimiento Visual<br/>GPT-4o-mini describe figuras y tablas"]
+        EMBED["Embeddings<br/>text-embedding-3-small"]
     end
 
-    subgraph SG3[Recuperación]
-        LEX["Búsqueda Léxica<br/>BM25 via pg_search / fallback tsvector"]
-        VEC["Búsqueda Vectorial<br/>pgvector coseno / índice HNSW"]
-        RRF["RRF Fusion<br/>Reciprocal Rank Fusion k=60"]
+    subgraph SG3["Recuperación"]
+        EXPAND["_expand_query<br/>query original + 2 variantes"]
+        LEX["Busqueda Lexica<br/>BM25 via pg_search / fallback tsvector"]
+        VEC["Busqueda Vectorial<br/>pgvector coseno / indice HNSW"]
+        RRF["RRF Fusion<br/>fusiona resultados de 3 consultas"]
     end
 
     subgraph SG4["Almacenamiento - ParadeDB / Postgres"]
-        DOC_T[("documents")]
-        CHK_T[("chunks<br/>embedding vector 1536<br/>content_tsv tsvector<br/>bm25 index")]
+        DOC_T["documents"]
+        CHK_T["chunks<br/>embedding(1536)<br/>content_tsv + bm25"]
     end
 
-    subgraph SG5[Generación]
-        CHAIN["RAG Chain<br/>LangChain ChatOpenAI"]
-        LLM["gpt-4o-mini<br/>fundamentado / sin alucinaciones"]
+    subgraph SG5["Generación"]
+        CHAIN["ReAct Agent (answer_query)<br/>_rewrite_query + loop con tools"]
+        TOOL["retrieve tool<br/>fallback sin filter si no hay resultados"]
+        LLM["ChatOpenAI gpt-4o-mini<br/>respuesta fundamentada + citas"]
     end
 
-    CLI_I --> DOCLING
-    DOCLING --> CHUNK
+    CLI_IP --> DOCLING
+    CLI_IC --> DOCLING
+    DOCLING --> CHUNK_P
+    DOCLING --> CHUNK_C
     DOCLING --> VISION
-    CHUNK --> CHK_T
+    CHUNK_P --> EMBED
+    CHUNK_C --> EMBED
     VISION --> CHK_T
+    EMBED --> CHK_T
     DOCLING --> DOC_T
 
-    CLI_D --> CHAIN
-    CHAIN --> LEX
-    CHAIN --> VEC
+    CLI_DP --> CHAIN
+    CLI_DC --> CHAIN
+    CHAIN --> TOOL
+    TOOL --> EXPAND
+    EXPAND --> LEX
+    EXPAND --> VEC
     LEX --> CHK_T
     VEC --> CHK_T
     LEX --> RRF
     VEC --> RRF
-    RRF --> CHAIN
+    RRF --> TOOL
+    TOOL --> CHAIN
     CHAIN --> LLM
 
-    class CLI_I,CLI_D cli
-    class DOCLING,CHUNK ingest
+    class CLI_IP,CLI_IC,CLI_DP,CLI_DC cli
+    class DOCLING,CHUNK_P,CHUNK_C,EMBED ingest
     class VISION vision
-    class LEX,VEC,RRF retrieval
+    class EXPAND,LEX,VEC,RRF retrieval
     class DOC_T,CHK_T storage
-    class CHAIN,LLM generation
+    class CHAIN,TOOL,LLM generation
 
     style SG1 fill:#BFDBFE,stroke:#2563EB,color:#000000,font-weight:bold
     style SG2 fill:#A7F3D0,stroke:#059669,color:#000000,font-weight:bold
@@ -84,8 +98,13 @@ La ingestión tiene dos rutas explícitas e independientes: **papers** y **cars*
 
 Ruta principal para papers científicos: `ingest.py` llama `ingest_pdf_papers()`, que usa el chunking histórico por elemento (`chunk_elements`) con `chunk_size=1200` y `chunk_overlap=150`.
 
+**Modelos usados (papers):**
+
+- `gpt-4o-mini`: genera descripciones de figuras y tablas en `vision_enrichment.py`.
+- `text-embedding-3-small`: crea embeddings para persistir y recuperar chunks semánticamente.
+
 ```mermaid
-%%{init: {'theme': 'base'}}%%
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
 flowchart TD
     classDef io      fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
     classDef ingest  fill:#D1FAE5,stroke:#10B981,color:#064E3B,font-weight:bold
@@ -117,7 +136,7 @@ flowchart TD
 Ruta para manuales de coche: `ingest_cars.py` y `demo_cars.py` llaman `ingest_pdf_cars()`, que usa `chunk_elements_cars()` para generar chunks más largos, orientados a instrucciones multi-bloque.
 
 ```mermaid
-%%{init: {'theme': 'base'}}%%
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
 flowchart TD
     classDef io      fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
     classDef ingest  fill:#D1FAE5,stroke:#10B981,color:#064E3B,font-weight:bold
@@ -159,7 +178,7 @@ Estas dos rutas comparten parseo, enriquecimiento visual, embedding y persistenc
 `src/retrieval/` implementa búsqueda híbrida en paralelo: BM25 sobre el índice `pg_search` para coincidencia exacta de términos, y coseno sobre `pgvector` para similitud semántica. `fusion.py` combina ambas listas con Reciprocal Rank Fusion sin necesidad de normalizar puntuaciones.
 
 ```mermaid
-%%{init: {'theme': 'base'}}%%
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
 flowchart TD
     classDef io        fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
     classDef hybrid    fill:#E0E7FF,stroke:#6366F1,color:#312E81,font-weight:bold
@@ -219,7 +238,7 @@ BM25 y la búsqueda vectorial devuelven puntuaciones en escalas completamente di
 `src/rag/` implementa un agente ReAct: `chain.py` reescribe la consulta cuando hay historial de conversación, expone el recuperador híbrido como herramienta LangChain (`@tool`) y ejecuta un bucle ReAct donde el LLM decide cuántas veces invocar `retrieve` antes de sintetizar la respuesta. Las citas se construyen a partir de todos los chunks acumulados a lo largo del bucle.
 
 ```mermaid
-%%{init: {'theme': 'base'}}%%
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
 flowchart TD
     classDef io        fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
     classDef chain     fill:#FCE7F3,stroke:#EC4899,color:#500724,font-weight:bold
@@ -270,65 +289,10 @@ El LLM elige activamente cuándo tiene suficiente contexto — puede llamar a `r
 
 ---
 
-## Flujo de Ingestión
-
-Cada PDF pasa por un pipeline de cuatro etapas que produce dos tipos de chunks: chunks de texto (prosa, tablas y código parseados) y chunks visuales (descripciones generadas por GPT-4o-mini de figuras y tablas extraídas).
-
-```mermaid
-%%{init: {'theme': 'base'}}%%
-flowchart LR
-    classDef pdf        fill:#FEF3C7,stroke:#D97706,color:#78350F,font-weight:bold
-    classDef parse      fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
-    classDef chunk      fill:#D1FAE5,stroke:#10B981,color:#064E3B,font-weight:bold
-    classDef vision     fill:#F3E8FF,stroke:#A855F7,color:#3B0764,font-weight:bold
-    classDef store      fill:#E0E7FF,stroke:#6366F1,color:#312E81,font-weight:bold
-
-    PDF["📄 Archivo PDF"]:::pdf --> PARSE
-
-    subgraph SG1["1 - Parseo"]
-        PARSE["Docling<br/>DocumentConverter<br/>imágenes de página habilitadas"]
-    end
-
-    subgraph SG2["2 - Chunking de texto"]
-        SPLIT["RecursiveCharacterTextSplitter<br/>elementos text / code / table"]
-    end
-
-    subgraph SG3["3 - Descripción de imágenes"]
-        EXPORT["Exportar PNGs<br/>./data/assets/"]
-        GPT_V["GPT-4o-mini vision<br/>descripción max 120 palabras<br/>por figura/tabla"]
-        EXPORT --> GPT_V
-    end
-
-    subgraph SG4["4 - Embedding y almacenamiento"]
-        EMBED["text-embedding-3-small<br/>embedding en lote"]
-        UPSERT["PostgreSQL upsert<br/>documents + chunks"]
-        EMBED --> UPSERT
-    end
-
-    PARSE -->|elementos de texto| SPLIT
-    PARSE -->|elementos figura/tabla| EXPORT
-    SPLIT -->|ChunkRecords| EMBED
-    GPT_V -->|figure_caption / table_caption| EMBED
-
-    class PARSE parse
-    class SPLIT chunk
-    class EXPORT,GPT_V vision
-    class EMBED,UPSERT store
-
-    style SG1 fill:#BFDBFE,stroke:#2563EB,color:#000000,font-weight:bold
-    style SG2 fill:#A7F3D0,stroke:#059669,color:#000000,font-weight:bold
-    style SG3 fill:#E9D5FF,stroke:#9333EA,color:#000000,font-weight:bold
-    style SG4 fill:#C7D2FE,stroke:#4F46E5,color:#000000,font-weight:bold
-```
-
-**Tipos de contenido almacenados:** `text`, `code`, `table`, `figure`, `figure_caption`, `table_caption`. Las figuras no se embeben directamente — solo sus descripciones generadas por GPT. Esto permite que la evidencia visual participe en la recuperación léxica y vectorial.
-
----
-
 ## Flujo de Consulta y Recuperación
 
 ```mermaid
-%%{init: {'theme': 'base'}}%%
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}}}%%
 flowchart TD
     classDef client    fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,font-weight:bold
     classDef chain     fill:#FCE7F3,stroke:#EC4899,color:#500724,font-weight:bold
@@ -365,7 +329,7 @@ flowchart TD
 ## Esquema de Base de Datos
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {
+%%{init: {'theme': 'base', 'securityLevel': 'loose', 'flowchart': {'htmlLabels': true}, 'themeVariables': {
   'primaryColor': '#E0E7FF',
   'primaryBorderColor': '#6366F1',
   'primaryTextColor': '#312E81',
